@@ -3,6 +3,17 @@
 What changed in which version.
 
 
+## [0.7.1] - 2023-10-18
+
+### Fixed
+* Integer division error when erasing specific region of flash.
+* Print erase/write/verify in correct order.
+
+
+### Cleaned
+* Extract method for range-to-pages calculation.
+
+
 ## [0.7.0] - 2023-10-12
 
 ### Added
