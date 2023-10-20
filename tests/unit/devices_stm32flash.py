@@ -13,6 +13,7 @@ F_NO_ME = "no-mass-erase"
 F_PEMPTY = "unknown"
 
 DEVICE_TABLE = [
+	# ID       name                            SRAM-address-range      FLASH-address-range      PPS  PSize  Option-byte-addr-range  System-mem-addr-range   Flags */
     # C0
 	# (0x443, "STM32C011xx"                     , 0x20001000, 0x20003000, 0x08000000, x         ,  x, x     , x         , x         , 0x1FFF0000, 0x1FFF1800, 0)
 	# (0x453, "STM32C031xx"                     , 0x20001000, 0x20001800, 0x08000000, x         ,  x, x     , x         , x         , 0x1FFF0000, 0x1FFF1800, 0)
