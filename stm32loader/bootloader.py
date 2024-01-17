@@ -27,6 +27,9 @@ import struct
 import time
 from functools import reduce
 
+from stm32loader.devices import DEVICES, DeviceFlag
+
+
 CHIP_IDS = {
     # see ST AN2606 Table 136 Bootloader device-dependent parameters
     # 16 to 32 KiB
