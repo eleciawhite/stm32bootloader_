@@ -487,10 +487,16 @@ class Stm32Bootloader:
         return _device_id
 
     def get_flash_size(self):
-        """Return the MCU's flash size in bytes."""
-        flash_size_address = self.FLASH_SIZE_ADDRESS[self.device_family]
-        flash_size_bytes = self.read_memory(flash_size_address, 2)
-        flash_size = flash_size_bytes[0] + (flash_size_bytes[1] << 8)
+        """Return the MCU's flash size in KiByte."""
+        if not self.device.family.flash_size_address:
+            return self.FLASH_SIZE_UNKNOWN
+
+        if self.device.flags & DeviceFlag.LONG_UID_ACCESS:
+            flash_size, _uid = self.get_flash_size_and_uid()
+            return flash_size
+
+        flash_size_data = self.read_memory(self.device.family.flash_size_address, 2)
+        flash_size = flash_size_data[0] + (flash_size_data[1] << 8)
         return flash_size
 
     def get_flash_size_and_uid(self):
@@ -536,13 +542,13 @@ class Stm32Bootloader:
         :return byterary: UID bytes of the device, or 0 or -1 when
           not available.
         """
-        uid_address = self.UID_ADDRESS.get(self.device_family, self.UID_ADDRESS_UNKNOWN)
-        if uid_address is None:
-            return self.UID_NOT_SUPPORTED
-        if uid_address == self.UID_ADDRESS_UNKNOWN:
-            return self.UID_ADDRESS_UNKNOWN
+        if self.device.flags & DeviceFlag.LONG_UID_ACCESS:
+            _flash_size, uid = self.get_flash_size_and_uid()
+        else:
+            if not self.device.family.uid_address:
+                return self.UID_NOT_SUPPORTED
+            uid = self.read_memory(self.device.family.uid_address, 12)
 
-        uid = self.read_memory(uid_address, 12)
         return uid
 
     @classmethod
