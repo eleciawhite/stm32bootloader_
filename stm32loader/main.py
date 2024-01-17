@@ -33,7 +33,7 @@ except ImportError:
 from stm32loader import args
 from stm32loader import hexfile
 from stm32loader import bootloader
-# from stm32loader.devices import DEVICES
+from stm32loader.devices import DeviceFlag
 from stm32loader.uart import SerialConnection
 
 
