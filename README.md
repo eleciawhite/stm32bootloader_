@@ -1,5 +1,17 @@
 # STM32Loader
 
+python main.py --port can1 --family H5 --verbose -e -w firmware/bootloader_test.bin
+
+
+ sudo ip link set can1 up type can bitrate 250000   dbitrate 1000000   restart-ms 1000 berr-reporting on fd on
+ sudo ifconfig can1 up
+  sudo ifconfig can1 down
+  
+  ip -details link show can1
+  dmesg | grep spi
+  dmesg | grep can
+
+
 [![PyPI package](https://badge.fury.io/py/stm32loader.svg)](https://badge.fury.io/py/stm32loader)
 [![GitHub Actions](https://img.shields.io/github/workflow/status/florisla/stm32loader/Test?label=tests)](https://github.com/florisla/stm32loader/actions/workflows/test.yaml)
 [![GitHub Actions](https://img.shields.io/github/workflow/status/florisla/stm32loader/Lint?label=lint)](https://github.com/florisla/stm32loader/actions/workflows/lint.yaml)
