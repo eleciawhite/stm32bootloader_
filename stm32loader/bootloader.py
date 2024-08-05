@@ -344,6 +344,8 @@ class Stm32Bootloader:
         "WL": 1024,
         # ST BlueNRG-2 data sheet: 128 pages of 8 * 64 * 4 bytes
         "NRG": 2048,
+        # ST RM0492 section section 7.2 FLASH main features
+        "H5": 128 * 1024,
         # ST RM0433 section 4.2 FLASH main features
         "H7": 128 * 1024,
     }
@@ -372,8 +374,19 @@ class Stm32Bootloader:
         self.verbosity = verbosity
         self.show_progress = show_progress or ShowProgress(None)
         self.extended_erase = False
-        self.data_transfer_size = self.DATA_TRANSFER_SIZE.get(device_family or "default")
-        self.flash_page_size = self.FLASH_PAGE_SIZE.get(device_family or "default")
+
+        self.data_transfer_size = self.DATA_TRANSFER_SIZE.get("default")
+        if self.DATA_TRANSFER_SIZE.get(device_family) is not None:
+            self.data_transfer_size = self.DATA_TRANSFER_SIZE.get(device_family)
+
+        self.flash_page_size = self.FLASH_PAGE_SIZE.get("default")
+        if self.FLASH_PAGE_SIZE.get(device_family) is not None:
+            self.flash_page_size = self.FLASH_PAGE_SIZE.get(device_family)
+        
+        self.flash_page_size = self.FLASH_SIZE_ADDRESS.get("default")
+        if self.FLASH_SIZE_ADDRESS.get(device_family) is not None:
+            self.flash_page_size = self.FLASH_SIZE_ADDRESS.get(device_family)
+
         self.device_family = device_family or "F1"
         self.device = device
 
@@ -416,18 +429,18 @@ class Stm32Bootloader:
         # This is likely an artifact/side effect of each command being
         # 2-bytes and having xor of bytes equal to 0xFF.
 
-        for attempt in range(self.SYNCHRONIZE_ATTEMPTS):
-            if attempt:
-                print("Bootloader activation timeout -- retrying")
-            self.write(self.Command.SYNCHRONIZE)
-            read_data = bytearray(self.connection.read())
-
-            if read_data and read_data[0] in (self.Reply.ACK, self.Reply.NACK):
-                # success
-                return
-
-        # not successful
-        raise CommandError("Bad reply from bootloader")
+#        for attempt in range(self.SYNCHRONIZE_ATTEMPTS):
+#            if attempt:
+#                print("Bootloader activation timeout -- retrying")
+#            self.write(self.Command.SYNCHRONIZE)
+#            read_data = bytearray(self.connection.read())
+#
+#            if read_data and read_data[0] in (self.Reply.ACK, self.Reply.NACK):
+#                # success
+#                return
+#
+#        # not successful
+#        raise CommandError("Bad reply from bootloader")
 
     def reset_from_flash(self):
         """Reset the MCU with boot0 disabled."""
@@ -445,9 +458,34 @@ class Stm32Bootloader:
         if not ack_received:
             raise CommandError("%s (%s) failed: no ack" % (description, command))
 
+    def printmsg(self, message):
+        if message is None:
+            print("No message")
+            return
+        header = '{0:f} {1:x} {2:x} {3:x} {4:x} '.format(message.timestamp, message.is_fd,message.bitrate_switch,message.arbitration_id, message.dlc)
+        body=''
+        for i in range(message.dlc ):
+            body +=  '{0:x} '.format(message.data[i])
+
+        print('printmsg {} : {}'.format(header, body))
+        print(message)
+
+
     def get(self):
+        import pdb; pdb.set_trace()
+        data_bytes = bytearray([self.Command.GET])
+        self.connection.write(data_bytes)    
+        self.printmsg(self.connection.read())
+        self.connection.write(data_bytes)    
+        self.printmsg(self.connection.read())
+        self.connection.write(data_bytes)    
+        self.printmsg(self.connection.read())
+        return        
+
         """Return the bootloader version and remember supported commands."""
         self.command(self.Command.GET, "Get")
+        self.write([self.Command.GET, 00,00])
+
         length = bytearray(self.connection.read())[0]
         version = bytearray(self.connection.read())[0]
         self.debug(10, "    Bootloader version: " + hex(version))
@@ -874,10 +912,20 @@ class Stm32Bootloader:
 
     def _wait_for_ack(self, info=""):
         """Read a byte and raise CommandError if it's not ACK."""
-        read_data = bytearray(self.connection.read())
+        retries = 5
+        while retries > 0:
+            retries -= 1
+            read_data = bytearray(self.connection.read())
+            if read_data:
+                reply = read_data[0]
+                if reply == self.Reply.NACK:
+                    print("retry " + info)
+                else:
+                    break
+
         if not read_data:
             raise CommandError("Can't read port or timeout")
-        reply = read_data[0]
+
         if reply == self.Reply.NACK:
             raise CommandError("NACK " + info)
         if reply != self.Reply.ACK:

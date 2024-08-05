@@ -154,7 +154,7 @@ def parse_arguments(arguments):
         "--verbose",
         dest="verbosity",
         action="store_const",
-        const=10,
+        const=100,
         default=DEFAULT_VERBOSITY,
         help="Verbose mode.",
     )
