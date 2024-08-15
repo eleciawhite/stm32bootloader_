@@ -312,6 +312,7 @@ class Stm32Bootloader:
         "WL": 256,
         "NRG": 256,
         # ST RM0433 section 4.2 FLASH main features
+        "H5": 256,
         "H7": 256,
     }
 
@@ -401,8 +402,13 @@ class Stm32Bootloader:
         """Write data to the MCU and wait until it replies with ACK."""
         # Note: this is a separate method from write() because a keyword
         # argument after *args was not possible in Python 2
-        self.write(*data)
-        return self._wait_for_ack(message)
+        msg = None
+        while msg is None:
+            self.write(*data)
+            ack, msg = self.connection.readnewint()
+        if (ack != self.Reply.ACK):
+            self.debug(0, message)
+        return (ack == self.Reply.ACK)
 
     def debug(self, level, message):
         """Print the given message if its level is low enough."""
@@ -433,7 +439,7 @@ class Stm32Bootloader:
 #            if attempt:
 #                print("Bootloader activation timeout -- retrying")
 #            self.write(self.Command.SYNCHRONIZE)
-#            read_data = bytearray(self.connection.read())
+#            read_data = self.connection.read()
 #
 #            if read_data and read_data[0] in (self.Reply.ACK, self.Reply.NACK):
 #                # success
@@ -454,48 +460,38 @@ class Stm32Bootloader:
         Raise CommandError if there's no ACK replied.
         """
         self.debug(10, "*** Command: %s" % description)
-        ack_received = self.write_and_ack("Command", command, command ^ 0xFF)
+        ack_received = self.write_and_ack("Command", command)
+
         if not ack_received:
             raise CommandError("%s (%s) failed: no ack" % (description, command))
-
-    def printmsg(self, message):
-        if message is None:
-            print("No message")
-            return
-        header = '{0:f} {1:x} {2:x} {3:x} {4:x} '.format(message.timestamp, message.is_fd,message.bitrate_switch,message.arbitration_id, message.dlc)
-        body=''
-        for i in range(message.dlc ):
-            body +=  '{0:x} '.format(message.data[i])
-
-        print('printmsg {} : {}'.format(header, body))
-        print(message)
-
+        return ack_received
 
     def get(self):
-        import pdb; pdb.set_trace()
-        data_bytes = bytearray([self.Command.GET])
-        self.connection.write(data_bytes)    
-        self.printmsg(self.connection.read())
-        self.connection.write(data_bytes)    
-        self.printmsg(self.connection.read())
-        self.connection.write(data_bytes)    
-        self.printmsg(self.connection.read())
-        return        
-
         """Return the bootloader version and remember supported commands."""
-        self.command(self.Command.GET, "Get")
-        self.write([self.Command.GET, 00,00])
+        success = self.command(self.Command.GET, "Get")
+        if success:
+            numcmds, msg = self.connection.readnewint()
+            version, msg = self.connection.readnewint()
 
-        length = bytearray(self.connection.read())[0]
-        version = bytearray(self.connection.read())[0]
-        self.debug(10, "    Bootloader version: " + hex(version))
-        supported_commands = bytearray(self.connection.read(length))
-        self.supported_commands = {command: True for command in supported_commands}
-        self.extended_erase = self.Command.EXTENDED_ERASE in self.supported_commands
-        self.debug(10, "    Available commands: " + ", ".join(hex(b) for b in self.supported_commands))
-        self._wait_for_ack("0x00 end")
-        return version
+            supported_commands = []
+            for i in range(0,numcmds):
+                cmd, msg = self.connection.readnewint()
+                supported_commands.append(cmd)
+            ack, msg = self.connection.readnewint()
+            if ack == self.Reply.ACK:
+                print("Get command completed: ")
+                print(supported_commands)
+            else:
+                print("Get command not completed")
 
+            self.supported_commands = {command: True for command in supported_commands}
+            self.extended_erase = self.Command.EXTENDED_ERASE in self.supported_commands
+            self.debug(10, "    Available commands: " + ", ".join(hex(b) for b in self.supported_commands))
+            return version
+        else:
+             print("Failed to get ack on GET command")
+        return None
+    
     def get_version(self):
         """
         Return the bootloader protocol version.
@@ -503,6 +499,7 @@ class Stm32Bootloader:
         Read protection status readout is not yet implemented.
         """
         self.command(self.Command.GET_VERSION, "Get version")
+        
         data = bytearray(self.connection.read(3))
         version = data[0]
         option_byte1 = data[1]
@@ -515,11 +512,13 @@ class Stm32Bootloader:
 
     def get_id(self):
         """Send the 'Get ID' command and return the chip/product/device ID."""
-        self.command(self.Command.GET_ID, "Get ID")
-        length = bytearray(self.connection.read())[0]
-        id_data = bytearray(self.connection.read(length + 1))
-        self._wait_for_ack("0x02 end")
-        _device_id = reduce(lambda x, y: x * 0x100 + y, id_data)
+        success = self.command(self.Command.GET_ID, "Get ID")
+        _device_id = None
+        if success:
+            _device_id, msg = self.connection.readnewint()
+            ack, msg = self.connection.readnewint()
+            if ack == self.Reply.ACK:
+                print("Get ID command completed: 0x{}".format(hex(_device_id)))
         return _device_id
 
     def get_flash_size(self):
@@ -608,10 +607,11 @@ class Stm32Bootloader:
 
     def get_bootloader_id(self):
         if not self.device.bootloader_id_address:
+            self.warn("No bootloader id address for this chip")
             return None
 
         bootloader_id_byte = self.read_memory_data(self.device.bootloader_id_address, 1)
-        bootloader_id = struct.unpack("B", bootloader_id_byte)[0]
+        bootloader_id = bootloader_id_byte[0]
 
         return bootloader_id
 
@@ -635,18 +635,38 @@ class Stm32Bootloader:
         """
         if length > self.data_transfer_size:
             raise DataLengthError("Can not read more than 256 bytes at once.")
-        self.command(self.Command.READ_MEMORY, "Read memory")
-        self.write_and_ack("0x11 address failed", self._encode_address(address))
-        nr_of_bytes = (length - 1) & 0xFF
-        checksum = nr_of_bytes ^ 0xFF
-        self.write_and_ack("0x11 length failed", nr_of_bytes, checksum)
-        return bytearray(self.connection.read(length))
+
+        cmd = struct.pack(">biB", self.Command.READ_MEMORY, address, length-1)
+        self.command(cmd, "Read memory")
+
+        bytestoread = length
+        data = bytearray()
+        while bytestoread > 0:
+            transfer_bytes = min(bytestoread, self.connection.max_transfer_size)
+            chunk, msg = self.connection.read()
+            data += chunk[0:transfer_bytes]
+            bytestoread -= transfer_bytes
+        
+        print("Read {} {} {}".format(len(data), len(chunk), length))
+        ack, msg = self.connection.readnewint()
+
+        if (ack == self.Reply.ACK):
+            return data
+        import pdb; pdb.set_trace()
+        
+        return None
 
     def go(self, address):
         """Send the 'Go' command to start execution of firmware."""
         # pylint: disable=invalid-name
-        self.command(self.Command.GO, "Go")
-        self.write_and_ack("0x21 go failed", self._encode_address(address))
+
+        cmd = struct.pack(">bi", self.Command.WRITE_MEMORY, address)
+        ack = self.command(cmd, "Go")
+        if (ack == self.Reply.ACK):
+            self.debug(10, "Go!")
+
+        return 
+
 
     def write_memory(self, address, data):
         """
@@ -654,25 +674,38 @@ class Stm32Bootloader:
 
         Supports maximum 256 bytes.
         """
-        nr_of_bytes = len(data)
-        if nr_of_bytes == 0:
+        bytestosend = len(data)
+        if bytestosend == 0:
             return
-        if nr_of_bytes > self.data_transfer_size:
+        if bytestosend > self.data_transfer_size:
             raise DataLengthError("Can not write more than 256 bytes at once.")
-        self.command(self.Command.WRITE_MEMORY, "Write memory")
-        self.write_and_ack("0x31 address failed", self._encode_address(address))
 
+        cmd = struct.pack(">biB", self.Command.WRITE_MEMORY, address, bytestosend-1)
+        self.command(cmd, "Write memory")
+        
         # pad data length to multiple of 4 bytes
-        if nr_of_bytes % 4 != 0:
-            padding_bytes = 4 - (nr_of_bytes % 4)
-            nr_of_bytes += padding_bytes
+        if bytestosend % 4 != 0:
+            padding_bytes = 4 - (bytestosend % 4)
+            bytestosend += padding_bytes
             # append value 0xFF: flash memory value after erase
-            data = bytearray(data)
             data.extend([0xFF] * padding_bytes)
 
-        self.debug(10, "    %s bytes to write" % [nr_of_bytes])
-        checksum = reduce(operator.xor, data, nr_of_bytes - 1)
-        self.write_and_ack("0x31 programming failed", nr_of_bytes - 1, data, checksum)
+        self.debug(10, "    %s bytes to write" % [bytestosend])
+
+        offset = 0
+        while bytestosend > 0:
+            transfer_bytes = min(bytestosend, self.connection.max_transfer_size)
+            senddata = bytearray(transfer_bytes+1)
+            senddata[0] = self.Command.WRITE_MEMORY
+            senddata[1:] = data[offset: offset+transfer_bytes]
+            self.write(senddata)
+            offset += transfer_bytes
+            bytestosend -= transfer_bytes
+
+        ack, msg = self.connection.readnewint()
+        if (ack != self.Reply.ACK):
+            self.debug(0, "Programming failed")
+
         self.debug(10, "    Write memory done")
 
     def erase_memory(self, pages=None):
@@ -733,6 +766,8 @@ class Stm32Bootloader:
             flash_size, _uid = self.get_flash_size_and_uid()
             pages = list(range(0, (flash_size * 1024) // self.flash_page_size))
 
+        cmd = struct.pack(">biB", self.Command.READ_MEMORY, address, length-1)
+
         self.command(self.Command.EXTENDED_ERASE, "Extended erase memory")
         if pages:
             # page erase, see ST AN3155
@@ -774,9 +809,12 @@ class Stm32Bootloader:
 
     def write_unprotect(self):
         """Disable write protection of the flash memory."""
-        self.command(self.Command.WRITE_UNPROTECT, "Write unprotect")
-        self._wait_for_ack("0x73 write unprotect failed")
-        self.debug(10, "    Write Unprotect done")
+        success = self.command(self.Command.WRITE_UNPROTECT, "Write unprotect")
+        if success:
+            self.debug(10, "    Write Unprotect done")
+        else:
+            self.warning(100, "    Write Unprotect failed")
+
 
     def readout_protect(self):
         """Enable readout protection of the flash memory."""
@@ -790,13 +828,13 @@ class Stm32Bootloader:
 
         Beware, this will erase the flash content.
         """
-        self.command(self.Command.READOUT_UNPROTECT, "Readout unprotect")
-        self._wait_for_ack("0x92 readout unprotect failed")
-        self.debug(20, "    Mass erase -- this may take a while")
-        time.sleep(20)
-        self.debug(20, "    Unprotect / mass erase done")
-        self.debug(20, "    Reset after automatic chip reset due to readout unprotect")
-        self.reset_from_system_memory()
+        success = self.command(self.Command.READOUT_UNPROTECT, "Readout unprotect")
+        if (success):
+            self.debug(20, "    Mass erase -- this may take a while")
+            time.sleep(20)
+            self.debug(20, "    Unprotect / mass erase done")
+        else:
+            self.debug("Readout unprotect failed")
 
     def read_memory_data(self, address, length):
         """
@@ -804,6 +842,7 @@ class Stm32Bootloader:
 
         Length may be more than 256 bytes.
         """
+
         data = bytearray()
         chunk_count = int(math.ceil(length / float(self.data_transfer_size)))
         self.debug(10, "Read %7d bytes in %3d chunks at address 0x%X..." % (length, chunk_count, address))
@@ -915,16 +954,18 @@ class Stm32Bootloader:
         retries = 5
         while retries > 0:
             retries -= 1
-            read_data = bytearray(self.connection.read())
-            if read_data:
-                reply = read_data[0]
-                if reply == self.Reply.NACK:
-                    print("retry " + info)
-                else:
-                    break
 
-        if not read_data:
+            ack, msg = self.connection.readnewint()    
+            if ack == self.Reply.NACK:
+                print("retry " + info)
+            else:
+                break
+
+        if ack is None:
             raise CommandError("Can't read port or timeout")
+
+        ack, msg = self.connection.readnewint()
+        return (ack == self.Reply.ACK)
 
         if reply == self.Reply.NACK:
             raise CommandError("NACK " + info)
