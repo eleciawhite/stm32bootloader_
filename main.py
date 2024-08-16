@@ -225,7 +225,6 @@ def main(*arguments, **kwargs):
         loader = Stm32Loader()
         loader.parse_arguments(arguments)
         loader.connect()
-        import pdb; pdb.set_trace()
 
         try:
             loader.detect_device()
