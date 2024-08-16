@@ -216,13 +216,16 @@ class Stm32Bootloader:
     @enum.unique
     class Reply(enum.IntEnum):
         """STM32 native bootloader reply status codes."""
-
         # pylint: disable=too-few-public-methods
-        # FIXME turn into intenum
-
         # See ST AN3155, AN4872
         ACK = 0x79
         NACK = 0x1F
+
+    @enum.unique
+    class EraseBank(enum.IntEnum):
+        ALL = 0xFFFF
+        BANK1 = 0xFFFE
+        BANK2 = 0xFFFD
 
     UID_ADDRESS = {
         # No unique id for these parts
@@ -652,7 +655,6 @@ class Stm32Bootloader:
 
         if (ack == self.Reply.ACK):
             return data
-        import pdb; pdb.set_trace()
         
         return None
 
@@ -660,10 +662,19 @@ class Stm32Bootloader:
         """Send the 'Go' command to start execution of firmware."""
         # pylint: disable=invalid-name
 
-        cmd = struct.pack(">bi", self.Command.WRITE_MEMORY, address)
+        cmd = struct.pack(">bI", self.Command.GO, address)
         ack = self.command(cmd, "Go")
-        if (ack == self.Reply.ACK):
-            self.debug(10, "Go!")
+
+        if (not ack):
+            self.debug(0, "Processor not listening")
+            print(ack)
+            return
+
+        ack, msg = self.connection.readnewint()
+
+        if (ack != self.Reply.ACK):
+            self.debug(0, "Address not valid")
+
 
         return 
 
@@ -760,42 +771,15 @@ class Stm32Bootloader:
         :param iterable pages: Iterable of integer page addresses, zero-based.
           Set to None to trigger global mass erase.
         """
-        if not pages and self.device_family in ("L0",):
-            # L0 devices do not support mass erase.
-            # Instead, erase all pages individually.
-            flash_size, _uid = self.get_flash_size_and_uid()
-            pages = list(range(0, (flash_size * 1024) // self.flash_page_size))
+        cmd = struct.pack(">bH", self.Command.EXTENDED_ERASE, self.EraseBank.ALL)
+        self.command(cmd, "Erase memory")
 
-        cmd = struct.pack(">biB", self.Command.READ_MEMORY, address, length-1)
-
-        self.command(self.Command.EXTENDED_ERASE, "Extended erase memory")
-        if pages:
-            # page erase, see ST AN3155
-            if len(pages) > 65535:
-                raise PageIndexError(
-                    "Can not erase more than 65535 pages at once.\n"
-                    "Set pages to None to do global erase or supply fewer pages."
-                )
-            page_count = (len(pages) & 0xFFFF) - 1
-            page_count_bytes = bytearray(struct.pack(">H", page_count))
-            page_bytes = bytearray(len(pages) * 2)
-            for i, page in enumerate(pages):
-                struct.pack_into(">H", page_bytes, i * 2, page)
-            checksum = reduce(operator.xor, page_count_bytes)
-            checksum = reduce(operator.xor, page_bytes, checksum)
-            self.write(page_count_bytes, page_bytes, checksum)
-        else:
-            # global mass erase: n=0xffff (page count) + checksum
-            # TO DO: support 0xfffe bank 1 erase / 0xfffe bank 2 erase
-            self.write(b"\xff\xff\x00")
-
-        previous_timeout_value = self.connection.timeout
-        self.connection.timeout = 30
-        print("Extended erase (0x44), this can take ten seconds or more")
-        try:
-            self._wait_for_ack("0x44 erasing failed")
-        finally:
-            self.connection.timeout = previous_timeout_value
+        ack, msg = self.connection.readnewint()
+        info = "erase command"
+        if ack == self.Reply.NACK:
+            raise CommandError("NACK " + info)
+        if ack != self.Reply.ACK:
+            raise CommandError("Unknown response. " + info + ": " + hex(reply))
         self.debug(10, "    Extended Erase memory done")
 
     def write_protect(self, pages):
