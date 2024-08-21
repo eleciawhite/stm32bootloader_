@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-# Authors: Ivan A-R, Floris Lambrechts
+
+# With significant modifications for FDCAN, this code 
+# is derived from 
 # GitHub repository: https://github.com/florisla/stm32loader
 #
 # This file is part of stm32loader.
@@ -18,7 +20,7 @@
 # along with stm32loader; see the file LICENSE.  If not see
 # <http://www.gnu.org/licenses/>.
 
-"""Flash firmware to STM32 microcontrollers over a serial connection."""
+"""Flash firmware to STM32 microcontrollers over an FDCAN connection."""
 
 import sys
 from types import SimpleNamespace
@@ -57,15 +59,15 @@ class Stm32Loader:
         self.stm32.connection.disconnect()
 
     def connect(self):
-        """Connect to the bootloader UART over an RS-232 serial port."""
-        serial_connection = CANConnection(self.configuration.port)
+        """Connect to the bootloader via FDCAN."""
+        can_connection = CANConnection(self.configuration.port)
         self.debug(
             10,
             "Open port %(port)s"
             % {"port": self.configuration.port},
         )
         try:
-            serial_connection.connect()
+            can_connection.connect()
         except IOError as e:
             print(str(e) + "\n", file=sys.stderr)
             print(
@@ -79,22 +81,12 @@ class Stm32Loader:
         show_progress = self._get_progress_bar(self.configuration.no_progress)
 
         self.stm32 = bootloader.Stm32Bootloader(
-            serial_connection,
+            can_connection,
             verbosity=self.configuration.verbosity,
             show_progress=show_progress,
             device_family=self.configuration.family,
         )
 
-        try:
-            print("Activating bootloader")
-            self.stm32.reset_from_system_memory()
-        except bootloader.CommandError:
-            print(
-                "Can't init into bootloader. Ensure that BOOT0 is enabled and reset the device.",
-                file=sys.stderr,
-            )
-            self.stm32.reset_from_flash()
-            sys.exit(1)
 
     def perform_commands(self):
         """Run all operations as defined by the configuration."""
@@ -106,23 +98,12 @@ class Stm32Loader:
             if data_file_path.suffix == ".hex":
                 binary_data = hexfile.load_hex(data_file_path)
             else:
-                binary_data = data_file_path.read_bytes()
-        if self.configuration.unprotect:
-            try:
-                self.stm32.readout_unprotect()
-            except bootloader.CommandError:
-                self.debug(0, "Flash readout unprotect failed")
-                self.debug(0, "Quit")
-                self.stm32.reset_from_flash()
-                sys.exit(1)
-        if self.configuration.protect:
-            try:
-                self.stm32.readout_protect()
-            except bootloader.CommandError:
-                self.debug(0, "Flash readout protect failed")
-                self.debug(0, "Quit")
-                self.stm32.reset_from_flash()
-                sys.exit(1)
+                try:
+                    binary_data = data_file_path.read_bytes()
+                except OSError as e:
+                    self.debug(0, "FAIL: File not found: " + self.configuration.data_file)
+                    return
+
         if self.configuration.erase:
             try:
                 if self.configuration.length is None:
@@ -139,12 +120,7 @@ class Stm32Loader:
 
             except bootloader.CommandError:
                 # may be caused by readout protection
-                self.debug(
-                    0,
-                    "Erase failed -- probably due to readout protection.\n"
-                    "Consider using the --unprotect option.",
-                )
-                self.stm32.reset_from_flash()
+                self.debug(0, "Erase failed.")
                 sys.exit(1)
         if self.configuration.write:
             self.stm32.write_memory_data(self.configuration.address, binary_data)
@@ -152,9 +128,9 @@ class Stm32Loader:
             read_data = self.stm32.read_memory_data(self.configuration.address, len(binary_data))
             try:
                 bootloader.Stm32Bootloader.verify_data(read_data, binary_data)
-                print("Verification OK")
+                self.debug(0, "Verification OK")
             except bootloader.DataMismatchError as e:
-                print("Verification FAILED: %s" % e, file=sys.stderr)
+                self.debug(0,"Verification FAILED: %s" % e, file=sys.stderr)
                 sys.exit(1)
         if not self.configuration.write and self.configuration.read:
             read_data = self.stm32.read_memory_data(
@@ -164,10 +140,6 @@ class Stm32Loader:
                 out_file.write(read_data)
         if self.configuration.go_address is not None:
             self.stm32.go(self.configuration.go_address)
-
-    def reset(self):
-        """Reset the microcontroller."""
-        self.stm32.reset_from_flash()
 
     def detect_device(self):
         boot_version = self.stm32.get()
@@ -221,23 +193,33 @@ def main(*arguments, **kwargs):
 
     Default usage is to supply *sys.argv[1:].
     """
+    error = False
+    loader = Stm32Loader()
+    loader.parse_arguments(arguments)        
     try:
-        loader = Stm32Loader()
-        loader.parse_arguments(arguments)
         loader.connect()
+    except:
+        loader.debug(0, "CAN connection failed: is the network up?")
+        error = True
 
+    if not error:    
         try:
             loader.detect_device()
+        except:
+            loader.debug(0, "Device detect failed: Is the MCU in bootloader mode?")
+            error = True
+    
+    if not error:    
+        try:
             loader.read_device_uid()
             loader.read_flash_size()
             loader.perform_commands()
-        finally:
-            loader.reset()
-    except SystemExit:
-        if not kwargs.get("avoid_system_exit", False):
+        except:
+            loader.debug(0, "Error performing commands")
+            loader.disconnect()
             raise
-    finally: 
-        loader.disconnect()
+
+    loader.disconnect()
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ def parse_arguments(arguments):
         epilog="\n".join(
             [
                 "examples:",
-                "  %(prog)s --port COM7 --family F1",
+                "  %(prog)s --port can1 --family H5",
                 "  %(prog)s --erase --write --verify example/main.bin",
             ]
         ),
@@ -76,14 +76,6 @@ def parse_arguments(arguments):
         ),
     )
 
-    parser.add_argument(
-        "-u", "--unprotect", action="store_true", help="Unprotect flash from readout."
-    )
-
-    parser.add_argument(
-        "-x", "--protect", action="store_true", help="Protect flash against readout."
-    )
-
     parser.add_argument("-w", "--write", action="store_true", help="Write file content to flash.")
 
     parser.add_argument(
@@ -100,21 +92,14 @@ def parse_arguments(arguments):
     length_arg = parser.add_argument(
         "-l", "--length", action="store", type=_auto_int, help="Length of read or erase."
     )
-
-    default_port = os.environ.get("STM32LOADER_SERIAL_PORT")
     port_arg = parser.add_argument(
         "-p",
         "--port",
         action="store",
         type=str,  # morally required=True
-        default=default_port,
-        help=("Serial port" + ("." if default_port else " (default: $STM32LOADER_SERIAL_PORT).")),
+        default="can0",
+        help=("CAN port to use.")
     )
-
-    parser.add_argument(
-        "-b", "--baud", action="store", type=int, default=115200, help="Baudrate."
-    )
-
     address_arg = parser.add_argument(
         "-a",
         "--address",
@@ -134,19 +119,16 @@ def parse_arguments(arguments):
         metavar="ADDRESS",
         help="Start executing from address (0x08000000, usually).",
     )
-
-    default_family = os.environ.get("STM32LOADER_FAMILY")
     parser.add_argument(
         "-f",
         "--family",
         action="store",
         type=str,
-        default=default_family,
+        default="H5",
         help=(
             "Device family to read out device UID and flash size; "
-            "e.g F1 for STM32F1xx. Possible values: F0, F1, F3, F4, F7, H7, L4, L0, G0, NRG."
-            + ("." if default_family else " (default: $STM32LOADER_FAMILY).")
-        ),
+            "e.g F1 for STM32F1xx. Possible values: F0, F1, F3, F4, F7, H5, H7, L4, L0, G0, NRG."
+        )
     )
 
     parser.add_argument(
@@ -162,62 +144,13 @@ def parse_arguments(arguments):
     parser.add_argument(
         "-q", "--quiet", dest="verbosity", action="store_const", const=0, help="Quiet mode."
     )
-
-    parser.add_argument(
-        "-s",
-        "--swap-rts-dtr",
-        action="store_true",
-        help="Swap RTS and DTR: use RTS for reset and DTR for boot0.",
-    )
-
-    parser.add_argument(
-        "-R", "--reset-active-high", action="store_true", help="Make RESET active high."
-    )
-
-    parser.add_argument(
-        "-B", "--boot0-active-low", action="store_true", help="Make BOOT0 active low."
-    )
-
     parser.add_argument(
         "-n", "--no-progress", action="store_true", help="Don't show progress bar."
     )
 
-    parser.add_argument(
-        "-P",
-        "--parity",
-        action="store",
-        type=str,
-        default="even",
-        choices=["even", "none"],
-        help='Parity: "even" for STM32, "none" for BlueNRG.',
-    )
-
     parser.add_argument("--version", action="version", version=__version__)
 
-    # Hack: We want certain arguments to be required when one
-    # of -rwv is specified, but argparse doesn't support
-    # conditional dependencies like that. Instead, we add the
-    # requirements post-facto and re-run the parse to get the error
-    # messages we want. A better solution would be to use
-    # subcommands instead of options for -rwv, but this would
-    # change the command-line interface.
-    #
-    # We also use this gross hack to provide a hint about the
-    # STM32LOADER_SERIAL_PORT environment variable when -p
-    # is omitted; we only set --port as required after the first
-    # parse so we can hook in a custom error message.
-
     configuration = parser.parse_args(arguments)
-
-    if not configuration.port:
-        port_arg.required = True
-        atexit.register(
-            lambda: print(
-                "{}: note: you can also set the environment "
-                "variable STM32LOADER_SERIAL_PORT".format(parser.prog),
-                file=sys.stderr,
-            )
-        )
 
     if configuration.read or configuration.write or configuration.verify:
         data_file_arg.nargs = None

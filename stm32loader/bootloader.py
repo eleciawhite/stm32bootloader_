@@ -209,10 +209,6 @@ class Stm32Bootloader:
         WRITE_PROTECT = 0x63
         WRITE_UNPROTECT = 0x73
 
-        # not really listed under commands, but still...
-        # 'wake the bootloader' == 'activate USART' == 'synchronize'
-        SYNCHRONIZE = 0x7F
-
     @enum.unique
     class Reply(enum.IntEnum):
         """STM32 native bootloader reply status codes."""
@@ -361,12 +357,7 @@ class Stm32Bootloader:
         Construct the Stm32Bootloader object.
 
         The supplied connection can be any object that supports
-        read() and write().  Optionally, it may also offer
-        enable_reset() and enable_boot0(); it should advertise this by
-        setting TOGGLES_RESET and TOGGLES_BOOT0 to True.
-
-        The default implementation is stm32loader.connection.SerialConnection,
-        but a straight pyserial serial.Serial object can also be used.
+        read() and write(). 
 
         :param connection: Object supporting read() and write().
           E.g. serial.Serial().
@@ -410,51 +401,13 @@ class Stm32Bootloader:
             self.write(*data)
             ack, msg = self.connection.readnewint()
         if (ack != self.Reply.ACK):
-            self.debug(0, message)
+            self.debug(0, "No ack for " + message)
         return (ack == self.Reply.ACK)
 
     def debug(self, level, message):
         """Print the given message if its level is low enough."""
         if self.verbosity >= level:
             print(message)
-
-    def reset_from_system_memory(self):
-        """Reset the MCU with boot0 enabled to enter the bootloader."""
-        self._enable_boot0(True)
-        self._reset()
-
-        # Flush the input buffer to avoid reading old data.
-        # It's known that the CP2102N at high baudrate fails to flush
-        # its buffer when the port is opened.
-        if hasattr(self.connection, "flush_input_buffer"):
-            self.connection.flush_input_buffer()
-
-        # Try the 0x7F synchronize that selects UART in bootloader mode
-        # (see ST application notes AN3155 and AN2606).
-        # If we are right after reset, it returns ACK, otherwise first
-        # time nothing, then NACK.
-        # This is not documented in STM32 docs fully, but ST official
-        # tools use the same algorithm.
-        # This is likely an artifact/side effect of each command being
-        # 2-bytes and having xor of bytes equal to 0xFF.
-
-#        for attempt in range(self.SYNCHRONIZE_ATTEMPTS):
-#            if attempt:
-#                print("Bootloader activation timeout -- retrying")
-#            self.write(self.Command.SYNCHRONIZE)
-#            read_data = self.connection.read()
-#
-#            if read_data and read_data[0] in (self.Reply.ACK, self.Reply.NACK):
-#                # success
-#                return
-#
-#        # not successful
-#        raise CommandError("Bad reply from bootloader")
-
-    def reset_from_flash(self):
-        """Reset the MCU with boot0 disabled."""
-        self._enable_boot0(False)
-        self._reset()
 
     def command(self, command, description):
         """
@@ -481,18 +434,13 @@ class Stm32Bootloader:
                 cmd, msg = self.connection.readnewint()
                 supported_commands.append(cmd)
             ack, msg = self.connection.readnewint()
-            if ack == self.Reply.ACK:
-                print("Get command completed: ")
-                print(supported_commands)
-            else:
-                print("Get command not completed")
+            if ack != self.Reply.ACK:
+                self.debug(0, "Get command not completed")
 
             self.supported_commands = {command: True for command in supported_commands}
             self.extended_erase = self.Command.EXTENDED_ERASE in self.supported_commands
-            self.debug(10, "    Available commands: " + ", ".join(hex(b) for b in self.supported_commands))
+            self.debug(20, "    Available commands: " + ", ".join(hex(b) for b in self.supported_commands))
             return version
-        else:
-             print("Failed to get ack on GET command")
         return None
     
     def get_version(self):
@@ -520,8 +468,6 @@ class Stm32Bootloader:
         if success:
             _device_id, msg = self.connection.readnewint()
             ack, msg = self.connection.readnewint()
-            if ack == self.Reply.ACK:
-                print("Get ID command completed: 0x{}".format(hex(_device_id)))
         return _device_id
 
     def get_flash_size(self):
@@ -650,13 +596,12 @@ class Stm32Bootloader:
             data += chunk[0:transfer_bytes]
             bytestoread -= transfer_bytes
         
-        print("Read {} {} {}".format(len(data), len(chunk), length))
         ack, msg = self.connection.readnewint()
 
         if (ack == self.Reply.ACK):
             return data
-        
-        return None
+        self.debug(10, "Read failed: %7d bytes address 0x%X..." % (length, address))
+        raise CommandError("Read failed: %7d bytes address 0x%X..." % (length, address))
 
     def go(self, address):
         """Send the 'Go' command to start execution of firmware."""
@@ -701,8 +646,6 @@ class Stm32Bootloader:
             # append value 0xFF: flash memory value after erase
             data.extend([0xFF] * padding_bytes)
 
-        self.debug(10, "    %s bytes to write" % [bytestosend])
-
         offset = 0
         while bytestosend > 0:
             transfer_bytes = min(bytestosend, self.connection.max_transfer_size)
@@ -716,8 +659,6 @@ class Stm32Bootloader:
         ack, msg = self.connection.readnewint()
         if (ack != self.Reply.ACK):
             self.debug(0, "Programming failed")
-
-        self.debug(10, "    Write memory done")
 
     def erase_memory(self, pages=None):
         """
@@ -833,11 +774,6 @@ class Stm32Bootloader:
         with self.show_progress("Reading", maximum=chunk_count) as progress_bar:
             while length:
                 read_length = min(length, self.data_transfer_size)
-                self.debug(
-                    10,
-                    "Read %(len)d bytes at 0x%(address)X"
-                    % {"address": address, "len": read_length},
-                )
                 data = data + self.read_memory(address, read_length)
                 progress_bar.next()
                 length = length - read_length
@@ -853,16 +789,11 @@ class Stm32Bootloader:
         length = len(data)
         chunk_count = int(math.ceil(length / float(self.data_transfer_size)))
         offset = 0
-        self.debug(5, "Write %6d bytes in %3d chunks at address 0x%X..." % (length, chunk_count, address))
+        self.debug(20, "Write %6d bytes in %3d chunks at address 0x%X..." % (length, chunk_count, address))
 
         with self.show_progress("Writing", maximum=chunk_count) as progress_bar:
             while length:
                 write_length = min(length, self.data_transfer_size)
-                self.debug(
-                    10,
-                    "Write %(len)d bytes at 0x%(address)X"
-                    % {"address": address, "len": write_length},
-                )
                 self.write_memory(address, data[offset : offset + write_length])
                 progress_bar.next()
                 length -= write_length
@@ -916,22 +847,6 @@ class Stm32Bootloader:
         pages = list(range(first_page, last_page))
 
         return pages
-
-    def _reset(self):
-        """Enable or disable the reset IO line (if possible)."""
-        if not hasattr(self.connection, "enable_reset"):
-            return
-        self.connection.enable_reset(True)
-        time.sleep(0.1)
-        self.connection.enable_reset(False)
-        time.sleep(0.5)
-
-    def _enable_boot0(self, enable=True):
-        """Enable or disable the boot0 IO line (if possible)."""
-        if not hasattr(self.connection, "enable_boot0"):
-            return
-
-        self.connection.enable_boot0(enable)
 
     def _wait_for_ack(self, info=""):
         """Read a byte and raise CommandError if it's not ACK."""
